@@ -32,7 +32,7 @@ const DIVISION_COLUMN_MAP = {
 
 const TEAM_STYLES = {
   Astros: { short: "HOU", color: "#eb6e1f" },
-  Blue Jays: { short: "TOR", color: "#134a8e" },
+  "Blue Jays": { short: "TOR", color: "#134a8e" },
   Braves: { short: "ATL", color: "#ba0c2f" },
   Brewers: { short: "MIL", color: "#12284b" },
   Cardinals: { short: "STL", color: "#c41e3a" },
@@ -104,16 +104,49 @@ async function loadSite() {
 }
 
 async function loadMarkdownTable(section) {
-  const response = await fetch(section.file);
-  if (!response.ok) {
-    throw new Error(`Failed to load ${section.file}`);
+  const candidates = [
+    section.file,
+    section.file.replace(/\.md$/i, ".html")
+  ];
+
+  for (const candidate of candidates) {
+    const response = await fetch(candidate);
+    if (!response.ok) {
+      continue;
+    }
+
+    const contentType = response.headers.get("content-type") ?? "";
+    const documentText = await response.text();
+
+    if (contentType.includes("text/html") || looksLikeHtml(documentText)) {
+      const parsedHtml = parseHtmlTable(documentText, section);
+      if (parsedHtml) {
+        return parsedHtml;
+      }
+      continue;
+    }
+
+    const parsedMarkdown = parseMarkdownDocument(documentText, section);
+    if (parsedMarkdown) {
+      return parsedMarkdown;
+    }
   }
 
-  const markdown = await response.text();
+  throw new Error(`Failed to load table data for ${section.file}`);
+}
+
+function parseMarkdownDocument(markdown, section) {
   const lines = markdown.split(/\r?\n/).filter(Boolean);
   const title = lines.find((line) => line.startsWith("# "))?.replace(/^#\s+/, "") ?? section.file;
   const tableLines = lines.filter((line) => line.trim().startsWith("|"));
+  if (tableLines.length < 3) {
+    return null;
+  }
+
   const rows = parseMarkdownTable(tableLines);
+  if (!rows.headers.length || !rows.records.length) {
+    return null;
+  }
 
   return {
     ...section,
@@ -121,6 +154,39 @@ async function loadMarkdownTable(section) {
     headers: rows.headers,
     rows: rows.records
   };
+}
+
+function parseHtmlTable(html, section) {
+  const parser = new DOMParser();
+  const documentNode = parser.parseFromString(html, "text/html");
+  const table = documentNode.querySelector("table");
+  if (!table) {
+    return null;
+  }
+
+  const title = documentNode.querySelector("h1")?.textContent?.trim() || section.file;
+  const headerCells = [...table.querySelectorAll("thead th")].map((cell) => normalizeCellText(cell.textContent));
+  const rowElements = [...table.querySelectorAll("tbody tr")];
+  const rows = rowElements.map((row) => [...row.children].map((cell) => normalizeCellText(cell.textContent)));
+
+  if (!headerCells.length || !rows.length) {
+    return null;
+  }
+
+  return {
+    ...section,
+    title,
+    headers: headerCells,
+    rows
+  };
+}
+
+function normalizeCellText(text) {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function looksLikeHtml(value) {
+  return /<html[\s>]|<table[\s>]|<!doctype html/i.test(value);
 }
 
 function parseMarkdownTable(lines) {
